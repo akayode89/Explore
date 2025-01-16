@@ -1,0 +1,111 @@
+/*
+--set REPLICA IDENTITY
+To capture the before and after state of the object that was modified.
+*/
+
+ALTER TABLE customer_profile REPLICA IDENTITY FULL;
+/*
+Update a record to see the impact of the REPLICA IDENTITY FULL
+*/
+UPDATE customer_profile
+SET customer_email = 'frankdebbie@gmail.com'
+WHERE customer_id = '183b29a1-339f-4031-8646-5e7b2d1aec07'
+SELECT *
+FROM customer_profile;
+
+
+-- Add audit columns
+ALTER TABLE customer_profile
+ADD COLUMN row_updated_at timestamp
+
+ALTER TABLE customer_profile
+ADD COLUMN row_updated_by varchar(255)
+
+
+-- Simple function to update the row_updated_by and row_updated_at
+CREATE OR REPLACE FUNCTION fxn_modified_info()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.row_updated_by := current_user;
+        NEW.row_updated_at := current_timestamp;
+        RETURN NEW;
+    END;
+$$ LANGUAGE plpgsql;
+
+-- Create a trigger for the function that update row_update_by and row_update_at
+CREATE TRIGGER trg_update_modified_info
+    BEFORE UPDATE ON customer_profile
+    FOR EACH ROW
+    EXECUTE FUNCTION fxn_modified_info();
+
+DROP TRIGGER trg_update_modified_info ON customer_profile;
+
+
+ALTER TABLE customer_profile
+ADD COLUMN change_details JSONB
+
+-- This function inserts a json record in customer_details to reflect the changes to the customer_email column
+CREATE OR REPLACE FUNCTION fxn_modified_col_info()
+    RETURNS TRIGGER AS $$
+DECLARE
+    changes JSONB;
+BEGIN
+    -- Initialize changes with an empty JSONB object
+    changes := '{}'::JSONB;
+
+    -- Record the email change
+    IF NEW.customer_email IS DISTINCT FROM OLD.customer_email THEN
+        changes := jsonb_set(changes, '{customer_email}', jsonb_build_object('old', OLD.customer_email, 'new', NEW.customer_email));
+    END IF;
+
+    -- Adding the user and timestamp
+    changes := changes || jsonb_build_object('row_updated_by', current_user, 'row_updated_at', current_timestamp);
+
+    NEW.change_details := changes;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- Define a function that will capture the full audit of the changes applied at the record level
+CREATE OR REPLACE FUNCTION fxn_modified_col_info()
+    RETURNS TRIGGER AS $$
+DECLARE
+    changes JSONB;
+BEGIN
+    -- Initialize changes with an empty JSONB object
+    changes := '{}'::JSONB;
+
+    -- Capture changes in customer_email
+    IF NEW.customer_email IS DISTINCT FROM OLD.customer_email THEN
+        changes := jsonb_set(changes, '{customer_email}', jsonb_build_object('old', OLD.customer_email, 'new', NEW.customer_email));
+    END IF;
+
+    -- Capture changes in customer_address
+    --IF NEW.customer_address IS DISTINCT FROM OLD.customer_address THEN
+        --changes := jsonb_set(changes, '{customer_address}', jsonb_build_object('old', OLD.customer_address, 'new', NEW.customer_address));
+    --END IF;
+
+    -- Adding the user and timestamp
+    NEW.row_updated_by := current_user;
+    NEW.row_updated_at := current_timestamp;
+
+    -- Update the change_details with additional details
+    changes := changes || jsonb_build_object('row_updated_by', current_user, 'row_updated_at', current_timestamp);
+    NEW.change_details := changes;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+--Recreate trigger that act on the audit function
+CREATE TRIGGER trg_update_modified_info
+    BEFORE UPDATE ON customer_profile
+    FOR EACH ROW
+    EXECUTE FUNCTION fxn_modified_col_info();
+
+
+update customer_profile
+set customer_email = 'bwhite@example.org'
+where customer_id = '0c223eae-119c-4872-bcb2-64758f5d54d8'
